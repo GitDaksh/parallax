@@ -62,6 +62,7 @@ export function useHeadTracker() {
     if (!video || stopRef.current) return;
 
     setState({ status: "starting" });
+    hideMediaPipeInfoLogs(); // must run before MediaPipe loads
 
     let stopped = false;
     let stream: MediaStream | null = null;
@@ -141,9 +142,7 @@ export function useHeadTracker() {
         if (video.currentTime !== lastVideoTime) {
           lastVideoTime = video.currentTime;
 
-          const result = withoutInfoLogs(() =>
-            created.detectForVideo(video, now),
-          );
+          const result = created.detectForVideo(video, now);
           const face = result.faceLandmarks[0];
           const a = face?.[LEFT_IRIS_CENTER];
           const b = face?.[RIGHT_IRIS_CENTER];
@@ -198,23 +197,24 @@ export function useHeadTracker() {
   return { videoRef, headRef, state, readout, start, stop };
 }
 
+let infoLogsHidden = false;
+
 /**
  * MediaPipe's WebAssembly prints harmless "INFO: …" lines through console.error
- * (e.g. "Created TensorFlow Lite XNNPACK delegate for CPU"), which Next.js shows as
- * an error in development. This hides only lines starting with "INFO:", and only
- * while `run` executes. Real errors still show.
+ * (e.g. "Created TensorFlow Lite XNNPACK delegate for CPU"), which Next.js shows as an
+ * error in development. MediaPipe keeps its own copy of console.error from the moment it
+ * loads, so we wrap console.error once, *before* loading it. Only lines starting with
+ * "INFO:" are dropped; every other message still shows.
  */
-function withoutInfoLogs<T>(run: () => T): T {
+function hideMediaPipeInfoLogs() {
+  if (infoLogsHidden) return;
+  infoLogsHidden = true;
+
   const original = console.error;
   console.error = (...args: unknown[]) => {
     if (typeof args[0] === "string" && args[0].startsWith("INFO:")) return;
     original.apply(console, args);
   };
-  try {
-    return run();
-  } finally {
-    console.error = original;
-  }
 }
 
 function describeCameraError(error: unknown): string {
