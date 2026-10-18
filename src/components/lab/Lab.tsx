@@ -8,7 +8,9 @@ import {
 } from "@/lib/depth/useDepthEstimator";
 import type { DepthBackend } from "@/lib/depth/types";
 import { drawDepthMap } from "@/lib/depth/visualize";
+import { useHeadTracker } from "@/lib/tracking/useHeadTracker";
 import DepthScene from "@/components/lab/DepthScene";
+import HeadTrackerPanel from "@/components/lab/HeadTrackerPanel";
 
 export default function Lab() {
   const [photo, setPhoto] = useState<Photo | null>(null);
@@ -17,6 +19,7 @@ export default function Lab() {
   const photoCanvasRef = useRef<HTMLCanvasElement>(null);
   const depthCanvasRef = useRef<HTMLCanvasElement>(null);
   const { state: depthState, backend, estimate } = useDepthEstimator();
+  const tracker = useHeadTracker();
 
   // Draw the photo preview.
   useEffect(() => {
@@ -93,6 +96,14 @@ export default function Lab() {
           </span>
         )}
       </div>
+
+      <HeadTrackerPanel
+        videoRef={tracker.videoRef}
+        state={tracker.state}
+        readout={tracker.readout}
+        onStart={() => void tracker.start()}
+        onStop={tracker.stop}
+      />
 
       {error && (
         <p role="alert" className="text-sm text-red-400">
