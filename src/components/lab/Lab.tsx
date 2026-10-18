@@ -8,6 +8,7 @@ import {
 } from "@/lib/depth/useDepthEstimator";
 import type { DepthBackend } from "@/lib/depth/types";
 import { drawDepthMap } from "@/lib/depth/visualize";
+import DepthScene from "@/components/lab/DepthScene";
 
 export default function Lab() {
   const [photo, setPhoto] = useState<Photo | null>(null);
@@ -17,7 +18,7 @@ export default function Lab() {
   const depthCanvasRef = useRef<HTMLCanvasElement>(null);
   const { state: depthState, backend, estimate } = useDepthEstimator();
 
-  // Draw the photo.
+  // Draw the photo preview.
   useEffect(() => {
     const canvas = photoCanvasRef.current;
     if (!canvas || !photo) return;
@@ -31,7 +32,7 @@ export default function Lab() {
     return () => photo?.bitmap.close();
   }, [photo]);
 
-  // Draw the depth map when it arrives.
+  // Draw the depth preview when it arrives.
   useEffect(() => {
     const canvas = depthCanvasRef.current;
     if (canvas && depthState.status === "done") {
@@ -56,6 +57,8 @@ export default function Lab() {
       setLoading(false);
     }
   }
+
+  const ready = photo !== null && depthState.status === "done";
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-6 px-6 py-10">
@@ -100,36 +103,56 @@ export default function Lab() {
       <DepthStatus state={depthState} backend={backend} />
 
       {photo ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          <figure className="flex flex-col gap-2">
-            <canvas
-              ref={photoCanvasRef}
-              className="h-auto w-full rounded-md border border-line"
-            />
-            <figcaption className="font-mono text-xs text-muted">
-              Photo
-            </figcaption>
-          </figure>
+        <section className="flex flex-col gap-4">
+          {ready ? (
+            <DepthScene photo={photo} depth={depthState.map} />
+          ) : (
+            <div
+              className="mx-auto grid place-items-center rounded-md border border-dashed border-line px-6 text-center text-sm text-muted"
+              style={{
+                aspectRatio: `${photo.width} / ${photo.height}`,
+                width: `min(100%, calc(75dvh * ${photo.width / photo.height}))`,
+              }}
+            >
+              The 3D view appears here
+            </div>
+          )}
 
-          <figure className="flex flex-col gap-2">
-            {depthState.status === "done" ? (
+          {ready && (
+            <p className="text-center text-sm text-muted">
+              Move your mouse over the view, or drag on a touch screen.
+            </p>
+          )}
+
+          <div className="grid w-full grid-cols-2 gap-4 sm:max-w-xl">
+            <figure className="flex flex-col gap-2">
               <canvas
-                ref={depthCanvasRef}
+                ref={photoCanvasRef}
                 className="h-auto w-full rounded-md border border-line"
               />
-            ) : (
-              <div
-                className="grid w-full place-items-center rounded-md border border-dashed border-line px-6 text-center text-sm text-muted"
-                style={{ aspectRatio: `${photo.width} / ${photo.height}` }}
-              >
-                The depth map appears here
-              </div>
-            )}
-            <figcaption className="font-mono text-xs text-muted">
-              Depth · white = near, black = far
-            </figcaption>
-          </figure>
-        </div>
+              <figcaption className="font-mono text-xs text-muted">
+                Photo
+              </figcaption>
+            </figure>
+
+            <figure className="flex flex-col gap-2">
+              {ready ? (
+                <canvas
+                  ref={depthCanvasRef}
+                  className="h-auto w-full rounded-md border border-line"
+                />
+              ) : (
+                <div
+                  className="w-full rounded-md border border-dashed border-line"
+                  style={{ aspectRatio: `${photo.width} / ${photo.height}` }}
+                />
+              )}
+              <figcaption className="font-mono text-xs text-muted">
+                Depth · white = near
+              </figcaption>
+            </figure>
+          </div>
+        </section>
       ) : (
         <div className="grid aspect-video w-full place-items-center rounded-md border border-dashed border-line px-6 text-center text-sm text-muted">
           Pick a photo to start. It stays on your device.
