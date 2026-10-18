@@ -4,8 +4,10 @@ import { useEffect, useRef, type RefObject } from "react";
 import {
   BufferAttribute,
   BufferGeometry,
+  CanvasTexture,
   Color,
   DoubleSide,
+  LinearFilter,
   Mesh,
   MeshBasicMaterial,
   PerspectiveCamera,
@@ -17,20 +19,24 @@ import {
 import type { Photo } from "@/lib/image";
 import type { DepthMap } from "@/lib/depth/types";
 import type { HeadPosition } from "@/lib/tracking/headPose";
-import { buildDepthGrid } from "@/lib/mesh/depthGrid";
+import { buildDepthGrid, type DepthGrid } from "@/lib/mesh/depthGrid";
 import { windowFrustum, type Vec3 } from "@/lib/projection/windowFrustum";
 import { eyeFromHead, pixelsPerCm } from "@/lib/projection/eyeFromHead";
 
-/** Prototype tuning knobs (some become sliders in Phase 2). Distances are in photo heights. */
+/** Tuning knobs (some become sliders later in Phase 2). Distances are in photo heights. */
 const SETTINGS = {
   /** Mesh detail along the photo's longer edge. */
   segments: 256,
-  /** Stretched-edge margin around the photo, so leaning doesn't reveal empty space. */
-  overscan: 0.15,
+  /** Triangles spanning a bigger depth jump than this are cut, so outlines don't stretch. */
+  tearThreshold: 0.04,
   /** How far behind the glass the farthest point sits. */
   depthScale: 0.5,
   /** Default eye distance from the glass (mouse mode, and the mesh's reference view). */
   viewDistance: 2,
+  /** How far the soft backdrop extends past the photo on each side (fraction of its size). */
+  backdropOverscan: 0.2,
+  /** Long edge of the tiny photo copy that becomes the blurred backdrop, in pixels. */
+  backdropSize: 40,
   /** Mouse mode: how far the eye moves when the pointer is at the edge of the view. */
   parallax: 0.3,
   /** The window is 10% smaller than the photo, which hides the photo's edges. */
@@ -42,6 +48,14 @@ const SETTINGS = {
 
 const NEAR = 0.01;
 const FAR = 100;
+
+/** A one-pixel depth map at the farthest depth: turns into a flat plane at the back of the scene. */
+const FAR_PLANE: DepthMap = {
+  data: new Float32Array([0]),
+  width: 1,
+  height: 1,
+  ms: 0,
+};
 
 type Props = {
   photo: Photo;
@@ -86,12 +100,44 @@ export default function DepthScene({
     canvas.style.touchAction = "none"; // dragging on the view shouldn't scroll the page
     container.appendChild(canvas);
 
-    // --- Mesh: the photo, shaped by its depth map ---
-    const grid = buildDepthGrid(depth, aspect, SETTINGS);
-    const geometry = new BufferGeometry();
-    geometry.setAttribute("position", new BufferAttribute(grid.positions, 3));
-    geometry.setAttribute("uv", new BufferAttribute(grid.uvs, 2));
-    geometry.setIndex(new BufferAttribute(grid.indices, 1));
+    const scene = new Scene();
+
+    // --- Backdrop: a soft, blurred copy of the photo at the farthest depth ---
+    // It shows through the gaps where the mesh is cut, and around the photo's edges
+    // when you lean. (Step 2 replaces it with a smarter fill.)
+    const backdropGeometry = toGeometry(
+      buildDepthGrid(FAR_PLANE, aspect, {
+        segments: 8,
+        depthScale: SETTINGS.depthScale,
+        viewDistance: SETTINGS.viewDistance,
+        overscan: SETTINGS.backdropOverscan,
+      }),
+    );
+    const backdropTexture = new CanvasTexture(
+      makeTinyCopy(photo.bitmap, SETTINGS.backdropSize),
+    );
+    backdropTexture.flipY = false; // match our UVs: v = 0 is the top
+    backdropTexture.colorSpace = SRGBColorSpace;
+    backdropTexture.generateMipmaps = false;
+    backdropTexture.minFilter = LinearFilter;
+    backdropTexture.magFilter = LinearFilter; // smooth stretching = blur
+    const backdropMaterial = new MeshBasicMaterial({
+      map: backdropTexture,
+      depthWrite: false, // never hides anything; the photo mesh always draws over it
+    });
+    const backdrop = new Mesh(backdropGeometry, backdropMaterial);
+    backdrop.renderOrder = -1; // drawn first
+    scene.add(backdrop);
+
+    // --- Photo mesh: shaped by the depth map, torn at sudden depth jumps ---
+    const geometry = toGeometry(
+      buildDepthGrid(depth, aspect, {
+        segments: SETTINGS.segments,
+        depthScale: SETTINGS.depthScale,
+        viewDistance: SETTINGS.viewDistance,
+        tearThreshold: SETTINGS.tearThreshold,
+      }),
+    );
 
     const texture = new Texture(photo.bitmap);
     texture.flipY = false; // WebGL can't flip ImageBitmaps; our UVs already put v = 0 at the top
@@ -100,7 +146,6 @@ export default function DepthScene({
     texture.needsUpdate = true;
 
     const material = new MeshBasicMaterial({ map: texture, side: DoubleSide });
-    const scene = new Scene();
     scene.add(new Mesh(geometry, material));
 
     // --- Camera: never rotates; the off-axis frustum does all the work ---
@@ -221,6 +266,9 @@ export default function DepthScene({
       geometry.dispose();
       material.dispose();
       texture.dispose();
+      backdropGeometry.dispose();
+      backdropMaterial.dispose();
+      backdropTexture.dispose();
       renderer.dispose();
       canvas.remove();
     };
@@ -238,4 +286,27 @@ export default function DepthScene({
       }}
     />
   );
+}
+
+/** Turns our plain grid arrays into a Three.js geometry. */
+function toGeometry(grid: DepthGrid): BufferGeometry {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute("position", new BufferAttribute(grid.positions, 3));
+  geometry.setAttribute("uv", new BufferAttribute(grid.uvs, 2));
+  geometry.setIndex(new BufferAttribute(grid.indices, 1));
+  return geometry;
+}
+
+/** A tiny copy of the photo. Stretched back up by the GPU, it looks like a heavy blur. */
+function makeTinyCopy(bitmap: ImageBitmap, longEdge: number): HTMLCanvasElement {
+  const scale = longEdge / Math.max(bitmap.width, bitmap.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(2, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(2, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.imageSmoothingQuality = "high";
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  }
+  return canvas;
 }

@@ -20,10 +20,16 @@ export type GridOptions = {
   /** Distance from the default eye to the glass, in photo heights. */
   viewDistance: number;
   /**
-   * Extra mesh around the photo on each side, as a fraction of its size (0.15 = 15%).
+   * Extra mesh around the photo on each side, as a fraction of its size (0.2 = 20%).
    * Edge pixels stretch into it, so moving the eye doesn't reveal empty space.
    */
   overscan?: number;
+  /**
+   * Drop triangles whose corners differ in depth by more than this (in 0–1 depth units).
+   * Those triangles would stretch like rubber across an object's outline. Without them,
+   * the object separates cleanly from what's behind it. Omit to keep every triangle.
+   */
+  tearThreshold?: number;
 };
 
 export type DepthGrid = {
@@ -31,7 +37,7 @@ export type DepthGrid = {
   positions: Float32Array<ArrayBuffer>;
   /** Texture coordinates for every vertex. v = 0 is the top of the photo. */
   uvs: Float32Array<ArrayBuffer>;
-  /** Three vertex indices per triangle, two triangles per grid square. */
+  /** Three vertex indices per triangle (torn triangles are left out). */
   indices: Uint32Array<ArrayBuffer>;
   columns: number;
   rows: number;
@@ -61,6 +67,7 @@ export function buildDepthGrid(
   options: GridOptions,
 ): DepthGrid {
   const { segments, depthScale, viewDistance, overscan = 0 } = options;
+  const maxJump = options.tearThreshold ?? Infinity;
 
   // The grid covers u and v from -overscan to 1 + overscan.
   const span = 1 + 2 * overscan;
@@ -78,6 +85,7 @@ export function buildDepthGrid(
 
   const positions = new Float32Array(columns * rows * 3);
   const uvs = new Float32Array(columns * rows * 2);
+  const vertexDepth = new Float32Array(columns * rows);
 
   for (let row = 0; row < rows; row++) {
     const v = -overscan + (row / segY) * span;
@@ -96,11 +104,24 @@ export function buildDepthGrid(
       // Outside 0–1 the texture repeats its edge pixels (WebGL clamp-to-edge).
       uvs[i * 2] = u;
       uvs[i * 2 + 1] = v;
+
+      vertexDepth[i] = depth;
     }
   }
 
   const indices = new Uint32Array(segX * segY * 6);
   let k = 0;
+
+  const addTriangle = (a: number, b: number, c: number) => {
+    const da = vertexDepth[a];
+    const db = vertexDepth[b];
+    const dc = vertexDepth[c];
+    if (Math.max(da, db, dc) - Math.min(da, db, dc) > maxJump) return; // torn
+    indices[k++] = a;
+    indices[k++] = b;
+    indices[k++] = c;
+  };
+
   for (let row = 0; row < segY; row++) {
     for (let col = 0; col < segX; col++) {
       const topLeft = row * columns + col;
@@ -108,14 +129,10 @@ export function buildDepthGrid(
       const bottomLeft = topLeft + columns;
       const bottomRight = bottomLeft + 1;
       // Counter-clockwise as seen from the viewer (+z), so faces point at the camera.
-      indices[k++] = topLeft;
-      indices[k++] = bottomLeft;
-      indices[k++] = topRight;
-      indices[k++] = topRight;
-      indices[k++] = bottomLeft;
-      indices[k++] = bottomRight;
+      addTriangle(topLeft, bottomLeft, topRight);
+      addTriangle(topRight, bottomLeft, bottomRight);
     }
   }
 
-  return { positions, uvs, indices, columns, rows };
+  return { positions, uvs, indices: indices.slice(0, k), columns, rows };
 }
