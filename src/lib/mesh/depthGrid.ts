@@ -19,6 +19,11 @@ export type GridOptions = {
   depthScale: number;
   /** Distance from the default eye to the glass, in photo heights. */
   viewDistance: number;
+  /**
+   * Extra mesh around the photo on each side, as a fraction of its size (0.15 = 15%).
+   * Edge pixels stretch into it, so moving the eye doesn't reveal empty space.
+   */
+  overscan?: number;
 };
 
 export type DepthGrid = {
@@ -55,11 +60,19 @@ export function buildDepthGrid(
   aspect: number,
   options: GridOptions,
 ): DepthGrid {
-  const { segments, depthScale, viewDistance } = options;
+  const { segments, depthScale, viewDistance, overscan = 0 } = options;
+
+  // The grid covers u and v from -overscan to 1 + overscan.
+  const span = 1 + 2 * overscan;
+  const longSegments = Math.max(1, Math.round(segments * span));
   const segX =
-    aspect >= 1 ? segments : Math.max(1, Math.round(segments * aspect));
+    aspect >= 1
+      ? longSegments
+      : Math.max(1, Math.round(longSegments * aspect));
   const segY =
-    aspect >= 1 ? Math.max(1, Math.round(segments / aspect)) : segments;
+    aspect >= 1
+      ? Math.max(1, Math.round(longSegments / aspect))
+      : longSegments;
   const columns = segX + 1;
   const rows = segY + 1;
 
@@ -67,12 +80,12 @@ export function buildDepthGrid(
   const uvs = new Float32Array(columns * rows * 2);
 
   for (let row = 0; row < rows; row++) {
-    const v = row / segY;
+    const v = -overscan + (row / segY) * span;
     for (let col = 0; col < columns; col++) {
-      const u = col / segX;
+      const u = -overscan + (col / segX) * span;
       const i = row * columns + col;
 
-      const depth = sampleDepth(map, u, v); // 1 = near, 0 = far
+      const depth = sampleDepth(map, u, v); // 1 = near, 0 = far (edges repeat outside 0–1)
       const behind = (1 - depth) * depthScale; // 0 for the nearest point
       const spread = 1 + behind / viewDistance; // keeps the point on its pixel's sight line
 
@@ -80,6 +93,7 @@ export function buildDepthGrid(
       positions[i * 3 + 1] = (0.5 - v) * spread;
       positions[i * 3 + 2] = -behind;
 
+      // Outside 0–1 the texture repeats its edge pixels (WebGL clamp-to-edge).
       uvs[i * 2] = u;
       uvs[i * 2 + 1] = v;
     }
